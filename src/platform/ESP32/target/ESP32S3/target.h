@@ -187,9 +187,6 @@
 #endif // !defined(USE_CONFIG)
 
 #undef USE_RANGEFINDER_HCSR04
-#undef USE_MAG
-#undef USE_MAG_HMC5883
-#undef USE_MAG_SPI_HMC5883
 #undef USE_VTX_RTC6705
 #undef USE_VTX_RTC6705_SOFTSPI
 #undef USE_SRXL

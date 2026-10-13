@@ -203,14 +203,11 @@ extern esp32_peripheral_t esp32UartDev2;
 #endif
 
 #if defined(ESP32S3)
-// ESP32-S3 executes normal .text from flash through a small instruction cache.
-// Keep Betaflight's existing hot-path annotations meaningful by placing
-// FAST_CODE and interrupt entry points in the IRAM window reserved by the S3
-// linker script.  FAST_CODE_NOINLINE intentionally remains outside that
-// window, matching the STM32 meaning used to keep large/cold helpers out of
-// scarce instruction RAM.
+// ESP32-S3 executes normal .text from flash through an instruction cache.
+// To ensure zero-cache-miss execution at 4kHz/8kHz, all hot paths, helpers
+// and interrupt entry points are mapped to internal SRAM (IRAM).
 #define FAST_CODE                       __attribute__((section(".iram.hot")))
-#define FAST_CODE_NOINLINE              __attribute__((noinline))
+#define FAST_CODE_NOINLINE              __attribute__((section(".iram.hot"), noinline))
 #define FAST_CODE_NOINLINE_CRITICAL     __attribute__((section(".iram.hot"), noinline))
 #define FAST_IRQ_HANDLER                __attribute__((section(".iram.isr"), noinline))
 
@@ -280,6 +277,9 @@ extern uint32_t systemUniqueId[3];
 #define UART_RX_BUFFER_ATTRIBUTE
 
 #define USE_LATE_TASK_STATISTICS
+#ifndef CPU_LOAD_LATE_LIMIT
+#define CPU_LOAD_LATE_LIMIT           100 // 10.0% late task limit (permille) on ESP32
+#endif
 
 #ifndef DEFAULT_VOLTAGE_METER_SCALE
 #define DEFAULT_VOLTAGE_METER_SCALE   100

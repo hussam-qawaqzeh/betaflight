@@ -45,6 +45,7 @@ uint32_t core1StackTop;
 #include "soc/soc.h"
 #include "soc/system_reg.h"
 #include "soc/rtc_cntl_reg.h"
+#include "esp_rom_sys.h"
 
 // ROM helper: set the address APP_CPU jumps to when released from reset.
 extern void ets_set_appcpu_boot_addr(uint32_t start);
@@ -73,13 +74,14 @@ static inline void mcBarrier(void)
 }
 
 // Runs on core 1.
-void esp32Core1Main(void)
+FAST_CODE void esp32Core1Main(void)
 {
     core1Running = true;
     mcBarrier();
 
     while (true) {
         if (mcTail == mcHead) {
+            esp_rom_delay_us(2);   // pause CPU to yield shared SRAM bus and save power
             continue;   // no work queued
         }
 

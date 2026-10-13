@@ -19,18 +19,20 @@
 MEMORY
 {
     /* 0x40374000..0x40378000 is the instruction-only startup bank.  Reserve
-     * another measured 32 KB from the following dual-port SRAM for the PID,
-     * filtering and mixer hot paths.  It aliases DRAM
-     * 0x3FC88000..0x3FC90000, so .data/.bss must start after that range. */
-    iram_seg (RWX) :   org = 0x40374000, len = 0xC000
+     * another 112 KB from the following dual-port SRAM (total 128 KB IRAM)
+     * for the PID, filtering, maths, IMU and driver hot paths to ensure zero-cache-miss
+     * execution at high loop rates (4kHz/8kHz).  It aliases DRAM
+     * 0x3FC88000..0x3FCA4000, so .data/.bss starts at 0x3FCA4000. */
+    iram_seg (RWX) :   org = 0x40374000, len = 0x20000
     /* End at 0x3FCEF000, NOT 0x3FCF0000 (SOC_DIRAM_DRAM_HIGH): the ROM keeps live
      * data structures in the top of DRAM - the SPI-flash chip descriptor
      * (g_rom_flashchip, via rom_spiflash_legacy_data @0x3FCEFFE4) and friends sit at
      * 0x3FCEF81C..0x3FCEFFFC. _estack is the top of this region and the main stack
      * grows down from it, so reaching 0x3FCF0000 would let the stack overwrite those
      * ROM globals - after which esp_rom_spiflash_* read a garbage chip descriptor and
-     * hang in wait_idle (and esp_rom_spiflash_attach faults). Reserve the top 4 KB. */
-    dram_seg (RW)  :   org = 0x3FC90000, len = 0x5F000
+     * hang in wait_idle (and esp_rom_spiflash_attach faults). Reserve the top 4 KB.
+     * Remaining DRAM is 300 KB, easily accommodating Betaflight data/bss (<80 KB). */
+    dram_seg (RW)  :   org = 0x3FCA4000, len = 0x4B000
     irom_seg (RX)  :   org = 0x42000020, len = 0x800000 - 0x20
     drom_seg (R)   :   org = 0x3C000020, len = 0x800000 - 0x20
 
@@ -83,6 +85,25 @@ SECTIONS
         *(.iram.hot.literal .iram.hot .iram.hot.*)
         /* Preserve compatibility with explicit ESP-IDF-style IRAM sections. */
         *(.iram.text.literal .iram.text .iram.text.*)
+
+        /* Flight performance critical hot paths mapped to fast internal SRAM */
+        *pid.o(.literal .literal.* .text .text.*)
+        *dyn_notch_filter.o(.literal .literal.* .text .text.*)
+        *filter.o(.literal .literal.* .text .text.*)
+        *maths.o(.literal .literal.* .text .text.*)
+        *rpm_filter.o(.literal .literal.* .text .text.*)
+        *imu.o(.literal .literal.* .text .text.*)
+        *gyro.o(.literal .literal.* .text .text.*)
+        *acceleration.o(.literal .literal.* .text .text.*)
+        *mixer.o(.literal .literal.* .text .text.*)
+        *rx.o(.literal .literal.* .text .text.*)
+        *rc.o(.literal .literal.* .text .text.*)
+        *bus_spi_esp32.o(.literal .literal.* .text .text.*)
+        *dshot_esp32.o(.literal .literal.* .text .text.*)
+        *dma_esp32.o(.literal .literal.* .text .text.*)
+        *timer_esp32.o(.literal .literal.* .text .text.*)
+        *serial_uart_esp32.o(.literal .literal.* .text .text.*)
+
         _iram_hot_end = ABSOLUTE(.);
         _iram_text_end = ABSOLUTE(.);
     } > iram_seg
@@ -90,7 +111,7 @@ SECTIONS
     ASSERT(_iram_runtime_start <= 0x40378000,
         "ESP32-S3 startup IRAM exceeds the dedicated 16 KB bank")
     ASSERT(_iram_text_end <= ORIGIN(iram_seg) + LENGTH(iram_seg) - 0x1000,
-        "ESP32-S3 IRAM code exceeds the 44 KB budget (4 KB reserve)")
+        "ESP32-S3 IRAM code exceeds the 124 KB budget (4 KB reserve)")
 
     /* Execute-in-place code in the IROM window. Defined before the DROM dummy
      * below because that dummy uses SIZEOF(.flash.text). */

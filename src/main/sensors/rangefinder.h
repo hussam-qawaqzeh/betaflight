@@ -46,6 +46,7 @@ typedef enum {
     RANGEFINDER_NOOPLOOP_FP   = 13,
     RANGEFINDER_NOOPLOOP_F2MINI = 14,
     RANGEFINDER_UPT1          = 15,
+    RANGEFINDER_PB04          = 16,
     RANGEFINDER_HARDWARE_COUNT,
 } rangefinderType_e;
 
@@ -75,11 +76,6 @@ typedef struct rangefinder_s {
 static inline bool rangefinderTypeUsesMsp(uint8_t type)
 {
     switch (type) {
-    case RANGEFINDER_MTF01:
-    case RANGEFINDER_MTF02:
-    case RANGEFINDER_MTF01P:
-    case RANGEFINDER_MTF02P:
-        return true;
     default:
         return false;
     }

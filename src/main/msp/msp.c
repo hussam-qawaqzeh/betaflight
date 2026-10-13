@@ -1780,10 +1780,7 @@ case MSP_NAME:
                 continue;
             };
             sbufWriteU8(dst, identifier);
-            // Assignments live on the feature PGs and are surfaced over the
-            // CLI; a zero mask here reads as unassigned on old configurators
-            // rather than a view they would try to edit.
-            sbufWriteU16(dst, 0);
+            sbufWriteU16(dst, serialSynthesizeFunctionMask(identifier));
             mspWritePortBaudRates(dst, identifier);
         }
         break;
@@ -1802,7 +1799,7 @@ case MSP_NAME:
                 continue;
             };
             sbufWriteU8(dst, identifier);
-            sbufWriteU32(dst, 0);
+            sbufWriteU32(dst, serialSynthesizeFunctionMask(identifier));
             mspWritePortBaudRates(dst, identifier);
         }
         break;
@@ -4288,6 +4285,74 @@ RAM_CODE static mspResult_e mspProcessInCommand(mspDescriptor_t srcDesc, int16_t
 #endif
         }
         break;
+
+    case MSP_SET_CF_SERIAL_CONFIG:
+        {
+            uint8_t portConfigSize = sizeof(uint8_t) + sizeof(uint16_t) + (sizeof(uint8_t) * 4);
+
+            if (dataSize % portConfigSize != 0) {
+                return MSP_RESULT_ERROR;
+            }
+
+            uint8_t remainingPortsInPacket = dataSize / portConfigSize;
+
+            while (remainingPortsInPacket--) {
+                uint8_t identifier = sbufReadU8(src);
+                uint16_t functionMask = sbufReadU16(src);
+                uint8_t msp_baud = sbufReadU8(src);
+                uint8_t gps_baud = sbufReadU8(src);
+                uint8_t telemetry_baud = sbufReadU8(src);
+                uint8_t blackbox_baud = sbufReadU8(src);
+
+                if (!serialApplyFunctionMask(identifier, functionMask)) {
+                    return MSP_RESULT_ERROR;
+                }
+                serialApplyPortBaud(identifier, SERIAL_BAUD_MSP, msp_baud);
+                serialApplyPortBaud(identifier, SERIAL_BAUD_GPS, gps_baud);
+                serialApplyPortBaud(identifier, SERIAL_BAUD_TELEMETRY, telemetry_baud);
+                serialApplyPortBaud(identifier, SERIAL_BAUD_BLACKBOX, blackbox_baud);
+            }
+        }
+        break;
+
+    case MSP2_COMMON_SET_SERIAL_CONFIG: {
+        if (dataSize < 1) {
+            return MSP_RESULT_ERROR;
+        }
+        unsigned count = sbufReadU8(src);
+        if (count == 0 || (dataSize - 1) % count != 0) {
+            return MSP_RESULT_ERROR;
+        }
+        unsigned portConfigSize = (dataSize - 1) / count;
+        unsigned expectedPortSize = sizeof(uint8_t) + sizeof(uint32_t) + (sizeof(uint8_t) * 4);
+        if (portConfigSize < expectedPortSize) {
+            return MSP_RESULT_ERROR;
+        }
+        for (unsigned ii = 0; ii < count; ii++) {
+            unsigned start = sbufBytesRemaining(src);
+            uint8_t identifier = sbufReadU8(src);
+            uint32_t functionMask = sbufReadU32(src);
+            uint8_t msp_baud = sbufReadU8(src);
+            uint8_t gps_baud = sbufReadU8(src);
+            uint8_t telemetry_baud = sbufReadU8(src);
+            uint8_t blackbox_baud = sbufReadU8(src);
+
+            if (!serialApplyFunctionMask(identifier, functionMask)) {
+                return MSP_RESULT_ERROR;
+            }
+            serialApplyPortBaud(identifier, SERIAL_BAUD_MSP, msp_baud);
+            serialApplyPortBaud(identifier, SERIAL_BAUD_GPS, gps_baud);
+            serialApplyPortBaud(identifier, SERIAL_BAUD_TELEMETRY, telemetry_baud);
+            serialApplyPortBaud(identifier, SERIAL_BAUD_BLACKBOX, blackbox_baud);
+
+            // Skip unknown bytes
+            while (start - sbufBytesRemaining(src) < portConfigSize && sbufBytesRemaining(src)) {
+                sbufReadU8(src);
+            }
+        }
+        break;
+    }
+
     case MSP_SET_FAILSAFE_CONFIG:
         failsafeConfigMutable()->failsafe_delay = sbufReadU8(src);
         failsafeConfigMutable()->failsafe_landing_time = sbufReadU8(src);

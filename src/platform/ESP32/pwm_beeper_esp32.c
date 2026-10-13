@@ -54,6 +54,7 @@ void beeperPwmInit(const ioTag_t tag, uint16_t frequency)
     // Initialize LEDC if needed
     int __DECLARE_RCC_ATOMIC_ENV __attribute__((unused));
     ledc_ll_enable_bus_clock(true);
+    ledc_ll_set_slow_clk_sel(&LEDC, LEDC_SLOW_CLK_APB);
 
     beeperIO = IOGetByTag(tag);
     if (!beeperIO) return;
@@ -65,15 +66,18 @@ void beeperPwmInit(const ioTag_t tag, uint16_t frequency)
     beeperLedcChannel = 7;
 
     // Calculate for desired frequency with 10-bit resolution
+    // LEDC LS timer divider register uses LEDC_LL_FRACTIONAL_BITS (8) fractional bits (Q10.8)
     uint8_t resolution = 10;  // 1024 counts
-    uint32_t divider = (80000000 << 4) / (frequency * (1 << resolution));
+    uint32_t divider = ((uint64_t)80000000 << 8) / (frequency * (1 << resolution));
 
     ledc_ll_set_clock_divider(&LEDC, LEDC_LOW_SPEED_MODE, 2, divider);
     ledc_ll_set_duty_resolution(&LEDC, LEDC_LOW_SPEED_MODE, 2, resolution);
     ledc_ll_timer_rst(&LEDC, LEDC_LOW_SPEED_MODE, 2);
     ledc_ll_ls_timer_update(&LEDC, LEDC_LOW_SPEED_MODE, 2);
+    ledc_ll_timer_resume(&LEDC, LEDC_LOW_SPEED_MODE, 2);
 
     ledc_ll_bind_channel_timer(&LEDC, LEDC_LOW_SPEED_MODE, beeperLedcChannel, 2);
+    ledc_ll_set_sig_out_en(&LEDC, LEDC_LOW_SPEED_MODE, beeperLedcChannel, true);
 
     // 50% duty for square wave
     beeperDuty = (1 << resolution) / 2;

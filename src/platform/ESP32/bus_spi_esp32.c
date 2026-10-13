@@ -632,7 +632,7 @@ FAST_CODE void spiSequenceStart(const extDevice_t *dev)
         } else {
             // SPI Mode 3: CPOL=1, CPHA=1
             hw->ESP32_SPI_CK_IDLE = 1;    // Clock idle high
-            hw->user.ck_out_edge = 1;     // Data clocked on trailing edge
+            hw->user.ck_out_edge = 0;     // In ESP32 hardware, ck_out_edge=0 when ck_idle_edge=1 is Mode 3
         }
         spi_ll_apply_config(hw);
 
@@ -698,7 +698,7 @@ uint16_t spiCalculateDivider(uint32_t freq)
 uint32_t spiCalculateClock(uint16_t spiClkDivisor)
 {
     if (spiClkDivisor == 0) {
-        return ESP32_APB_CLK_FREQ;
+        return 1000000;
     }
 
     return ESP32_APB_CLK_FREQ / spiClkDivisor;

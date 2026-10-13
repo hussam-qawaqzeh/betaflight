@@ -113,6 +113,7 @@ _start:
 .Lbss_done:
 
     /* Configure + enable the instruction cache before executing IROM code. */
+    mov     a5, a1
     movi    a6, 1
     slli    a6, a6, 14          /* ICACHE_SIZE_16KB */
     movi    a7, ICACHE_WAYS
@@ -122,6 +123,7 @@ _start:
     isync
 
     /* main(0, 0). */
+    mov     a5, a1
     movi    a6, 0
     movi    a7, 0
     l32r    a8, .LP_main
@@ -156,6 +158,7 @@ esp32Core1Entry:
     l32i    a3, a3, 0                 /* a3 = core1 stack top address */
     movi    a4, -16
     and     a1, a3, a4                /* SP = 16-byte aligned stack top */
+    mov     a5, a1
     l32r    a8, .LP_c1_main
     callx4  a8                        /* esp32Core1Main() - never returns */
 .Lc1_hang:

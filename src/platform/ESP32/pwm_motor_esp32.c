@@ -90,8 +90,17 @@ static void pwmMotorWrite(uint8_t index, float value)
 {
     if (index >= esp32PwmMotorCount || !esp32PwmMotors[index].enabled) return;
 
-    // Convert value to duty cycle
-    uint32_t duty = lrintf(value * esp32PwmMotors[index].pulseScale + esp32PwmMotors[index].pulseOffset);
+    // Convert value to duty cycle with clamping to prevent underflow/overflow
+    float rawDuty = value * esp32PwmMotors[index].pulseScale + esp32PwmMotors[index].pulseOffset;
+    if (rawDuty < 0.0f) {
+        rawDuty = 0.0f;
+    }
+    const float maxDuty = (float)(1u << SOC_LEDC_TIMER_BIT_WIDTH);
+    if (rawDuty > maxDuty) {
+        rawDuty = maxDuty;
+    }
+
+    uint32_t duty = (uint32_t)lrintf(rawDuty);
 
     ledc_ll_set_duty_int_part(&LEDC, LEDC_LOW_SPEED_MODE, esp32PwmMotors[index].ledcChannel, duty);
     ledc_ll_set_duty_start(&LEDC, LEDC_LOW_SPEED_MODE, esp32PwmMotors[index].ledcChannel);

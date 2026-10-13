@@ -35,12 +35,14 @@
 
 #include "platform/interrupt.h"
 
+#define MAX_EXTI_PINS 64
+
 typedef struct {
     extiCallbackRec_t* handler;
 } extiChannelRec_t;
 
-static extiChannelRec_t extiChannelRecs[DEFIO_USED_COUNT];
-static uint32_t extiTriggerMask[DEFIO_USED_COUNT];
+static extiChannelRec_t extiChannelRecs[MAX_EXTI_PINS];
+static uint32_t extiTriggerMask[MAX_EXTI_PINS];
 
 // Shared GPIO ISR - reads interrupt status and dispatches to per-pin callbacks.
 // Handles pins 0-31 via the primary status register and pins 32-48 via the
@@ -57,7 +59,7 @@ FAST_IRQ_HANDLER static void EXTI_IRQHandler(void *arg)
         uint32_t pin = __builtin_ctz(status);
         status &= ~(1U << pin);
         gpio_ll_clear_intr_status(&GPIO, (1U << pin));
-        if (pin < DEFIO_USED_COUNT && extiChannelRecs[pin].handler && extiChannelRecs[pin].handler->fn) {
+        if (pin < MAX_EXTI_PINS && extiChannelRecs[pin].handler && extiChannelRecs[pin].handler->fn) {
             extiChannelRecs[pin].handler->fn(extiChannelRecs[pin].handler);
         }
     }
@@ -69,7 +71,7 @@ FAST_IRQ_HANDLER static void EXTI_IRQHandler(void *arg)
         uint32_t pin = bit + 32;
         status &= ~(1U << bit);
         gpio_ll_clear_intr_status_high(&GPIO, (1U << bit));
-        if (pin < DEFIO_USED_COUNT && extiChannelRecs[pin].handler && extiChannelRecs[pin].handler->fn) {
+        if (pin < MAX_EXTI_PINS && extiChannelRecs[pin].handler && extiChannelRecs[pin].handler->fn) {
             extiChannelRecs[pin].handler->fn(extiChannelRecs[pin].handler);
         }
     }
@@ -85,6 +87,9 @@ void EXTIConfig(IO_t io, extiCallbackRec_t *cb, int irqPriority, ioConfig_t conf
     UNUSED(config);
 
     uint32_t gpio = IO_Pin(io);
+    if (gpio >= MAX_EXTI_PINS) {
+        return;
+    }
     extiChannelRec_t *rec = &extiChannelRecs[gpio];
     rec->handler = cb;
 
@@ -120,8 +125,10 @@ void EXTIRelease(IO_t io)
     }
 
     EXTIDisable(io);
-    extiChannelRec_t *rec = &extiChannelRecs[IO_Pin(io)];
-    rec->handler = NULL;
+    uint32_t gpio = IO_Pin(io);
+    if (gpio < MAX_EXTI_PINS) {
+        extiChannelRecs[gpio].handler = NULL;
+    }
 }
 
 void EXTIInit(void)

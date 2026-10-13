@@ -163,11 +163,13 @@ static const struct serialPortVTable usbVTable[] = {
     }
 };
 
+#include "soc/usb_serial_jtag_struct.h"
+
 void usbVcpInit(void)
 {
-    // The USB Serial/JTAG controller is enabled by default after ROM boot
-    // Enable bus clock if needed
-    // usb_serial_jtag_ll_enable_bus_clock(true);
+    // Disable the host-RTS/DTR-triggered chip reset so opening/closing
+    // the CDC port from a PC/Configurator does not reboot the flight controller.
+    USB_SERIAL_JTAG.chip_rst.usb_uart_chip_rst_dis = 1;
 }
 
 serialPort_t *usbVcpOpen(void)

@@ -44,7 +44,7 @@ typedef enum { ESP32_IRQ_0 = 0 } IRQn_Type;
 // handlers are routed to level-1 CPU interrupts, so raising PS.INTLEVEL to one
 // provides the critical-section semantics required by ATOMIC_BLOCK.  Preserve
 // the old level so nested blocks and ISR callers restore it correctly.
-#if defined(ESP32S3)
+#if defined(__XTENSA__) || defined(ESP32S3) || (defined(ESP32) && !defined(ESP32C5) && !defined(ESP32P4))
 __attribute__((always_inline)) static inline uint32_t esp32GetInterruptLevel(void)
 {
     uint32_t ps;
@@ -62,8 +62,6 @@ __attribute__((always_inline)) static inline void esp32SetInterruptLevel(uint32_
 
 __attribute__((always_inline)) static inline void __set_BASEPRI(uint32_t basePri)
 {
-    // Values saved by __get_BASEPRI are raw Xtensa levels.  Other callers pass
-    // ARM-style encoded priorities; any non-zero value masks our level-1 IRQs.
     esp32SetInterruptLevel(basePri <= 0x0FU ? basePri : 1U);
 }
 
@@ -74,8 +72,6 @@ __attribute__((always_inline)) static inline uint32_t __get_BASEPRI(void)
 
 __attribute__((always_inline)) static inline void __set_BASEPRI_MAX(uint32_t basePri)
 {
-    // Normalise like __set_BASEPRI (raw Xtensa level, or 1 for an ARM-encoded
-    // priority) and only ever raise the level, never lower it.
     const uint32_t requestedLevel = basePri <= 0x0FU ? basePri : 1U;
     if (esp32GetInterruptLevel() < requestedLevel) {
         esp32SetInterruptLevel(requestedLevel);
@@ -84,9 +80,45 @@ __attribute__((always_inline)) static inline void __set_BASEPRI_MAX(uint32_t bas
 
 static inline void __enable_irq(void) { esp32SetInterruptLevel(0); }
 static inline void __disable_irq(void) { esp32SetInterruptLevel(15); }
+#elif defined(__riscv) || defined(ESP32C5) || defined(ESP32P4)
+__attribute__((always_inline)) static inline uint32_t esp32GetInterruptLevel(void)
+{
+    uint32_t mstatus;
+    __asm__ volatile ("csrr %0, mstatus" : "=r"(mstatus));
+    return (mstatus & 0x8U) ? 0 : 1;
+}
+
+__attribute__((always_inline)) static inline void esp32SetInterruptLevel(uint32_t level)
+{
+    if (level == 0) {
+        __asm__ volatile ("csrsi mstatus, 0x8" ::: "memory");
+    } else {
+        __asm__ volatile ("csrci mstatus, 0x8" ::: "memory");
+    }
+}
+
+__attribute__((always_inline)) static inline void __set_BASEPRI(uint32_t basePri)
+{
+    esp32SetInterruptLevel(basePri != 0 ? 1 : 0);
+}
+
+__attribute__((always_inline)) static inline uint32_t __get_BASEPRI(void)
+{
+    return esp32GetInterruptLevel();
+}
+
+__attribute__((always_inline)) static inline void __set_BASEPRI_MAX(uint32_t basePri)
+{
+    if (basePri) {
+        esp32SetInterruptLevel(1);
+    }
+}
+
+static inline void __enable_irq(void) { esp32SetInterruptLevel(0); }
+static inline void __disable_irq(void) { esp32SetInterruptLevel(1); }
 #else
-// Bring-up stubs retained for the other ESP variants until their native
-// interrupt-controller critical sections are implemented.
+__attribute__((always_inline)) static inline uint32_t esp32GetInterruptLevel(void) { return 0; }
+__attribute__((always_inline)) static inline void esp32SetInterruptLevel(uint32_t level) { (void)level; }
 __attribute__((always_inline)) static inline void __set_BASEPRI(uint32_t basePri) { (void)basePri; }
 __attribute__((always_inline)) static inline uint32_t __get_BASEPRI(void) { return 0; }
 __attribute__((always_inline)) static inline void __set_BASEPRI_MAX(uint32_t basePri) { (void)basePri; }
@@ -103,7 +135,8 @@ __attribute__((always_inline)) static inline void __set_BASEPRI_nb(uint32_t base
 __attribute__((always_inline)) static inline void __set_BASEPRI_MAX_nb(uint32_t basePri) { __set_BASEPRI_MAX(basePri); }
 
 // NVIC compatibility stub
-static inline void NVIC_SystemReset(void) { while(1); }
+void systemReset(void);
+static inline void NVIC_SystemReset(void) { systemReset(); }
 
 #define NVIC_PriorityGroup_2         0x500
 #define PLATFORM_NO_LIBC             0
@@ -203,19 +236,20 @@ extern esp32_peripheral_t esp32UartDev2;
 // GPIO mode constants for IO_CONFIG macro
 // Names prefixed with BF_ to avoid conflict with ESP-IDF gpio_types.h
 // which defines GPIO_MODE_INPUT/OUTPUT as enum members.
-#define BF_GPIO_MODE_INPUT     0
-#define BF_GPIO_MODE_OUTPUT    1
-#define BF_GPIO_PULLUP         1
-#define BF_GPIO_PULLDOWN       2
+#define BF_GPIO_MODE_INPUT       0
+#define BF_GPIO_MODE_OUTPUT      1
+#define BF_GPIO_MODE_OUTPUT_OD   2
+#define BF_GPIO_PULLUP           1
+#define BF_GPIO_PULLDOWN         2
 
 #define IO_CONFIG(mode, speed, pupd) ((mode) | ((speed) << 2) | ((pupd) << 5))
 
 #define IOCFG_OUT_PP          IO_CONFIG(BF_GPIO_MODE_OUTPUT, 0, 0)
-#define IOCFG_OUT_OD          IO_CONFIG(BF_GPIO_MODE_OUTPUT, 0, 0)
+#define IOCFG_OUT_OD          IO_CONFIG(BF_GPIO_MODE_OUTPUT_OD, 0, 0)
 #define IOCFG_AF_PP           0
 #define IOCFG_AF_OD           0
-#define IOCFG_IPD             IO_CONFIG(BF_GPIO_MODE_INPUT, 0, 0)
-#define IOCFG_IPU             IO_CONFIG(BF_GPIO_MODE_INPUT, 0, 0)
+#define IOCFG_IPD             IO_CONFIG(BF_GPIO_MODE_INPUT, 0, BF_GPIO_PULLDOWN)
+#define IOCFG_IPU             IO_CONFIG(BF_GPIO_MODE_INPUT, 0, BF_GPIO_PULLUP)
 #define IOCFG_IN_FLOATING     IO_CONFIG(BF_GPIO_MODE_INPUT, 0, 0)
 
 #define SPI_IO_AF_CFG           0

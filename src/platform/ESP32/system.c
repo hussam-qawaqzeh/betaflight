@@ -176,6 +176,13 @@ STATIC_ASSERT(sizeof(timeUs_t) == sizeof(uint32_t), timeUs_t_is_32_bit_failed);
 
 FAST_CODE timeUs_t micros(void)
 {
+    uint32_t lo;
+    uint32_t hi;
+
+    // Mask interrupts to prevent torn snapshot reads from ISRs or rollover
+    uint32_t prevLevel = esp32GetInterruptLevel();
+    esp32SetInterruptLevel(1);
+
     // Take a snapshot of counter unit 0
     systimer_ll_counter_snapshot(&SYSTIMER, 0);
 
@@ -184,12 +191,15 @@ FAST_CODE timeUs_t micros(void)
     }
 
     // Read the 52-bit counter value
-    uint32_t lo = systimer_ll_get_counter_value_low(&SYSTIMER, 0);
-    uint32_t hi = systimer_ll_get_counter_value_high(&SYSTIMER, 0);
+    lo = systimer_ll_get_counter_value_low(&SYSTIMER, 0);
+    hi = systimer_ll_get_counter_value_high(&SYSTIMER, 0);
+
+    esp32SetInterruptLevel(prevLevel);
+
     uint64_t ticks = ((uint64_t)hi << 32) | lo;
 
-    // Convert 16 MHz ticks to microseconds
-    return (timeUs_t)(ticks / SYSTIMER_TICKS_PER_US);
+    // Convert 16 MHz ticks to microseconds using fast shift (ticks / 16)
+    return (timeUs_t)(ticks >> 4);
 }
 
 #else

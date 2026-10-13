@@ -34,6 +34,7 @@ typedef struct displayPortProfile_s {
 
     uint8_t fontSelection[DISPLAYPORT_SEVERITY_COUNT];
     uint8_t useDeviceBlink;    // Use device local blink capability
+    uint16_t cellBudget;       // Max cells written between two clears, 0 = unlimited (MSP only)
 } displayPortProfile_t;
 
 PG_DECLARE(displayPortProfile_t, displayPortProfileMsp);

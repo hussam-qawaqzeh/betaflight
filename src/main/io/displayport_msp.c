@@ -27,6 +27,8 @@
 
 #ifdef USE_MSP_DISPLAYPORT
 
+#include "build/debug.h"
+
 #include "cli/cli.h"
 
 #include "common/utils.h"
@@ -44,8 +46,43 @@
 
 #include "pg/vcd.h"
 
+// MSP_DP_WRITE_STRING carries at most this many characters. DJI O3/Goggles 2 accept 32,
+// other receivers may be sized for 30, so a longer string is sent in several writes.
+#define MSP_OSD_MAX_STRING_LENGTH 30
+
+// Bytes it costs to start another write: the MSP v1 frame (6) and the write header (4)
+#define MSP_DP_WRITE_OVERHEAD 10
+
+// DJI O3 Air Unit + Goggles 2 discard a whole DRAW_SCREEN whose load is over a fixed limit and keep
+// showing the previous frame. Only CLEAR_SCREEN frees load. The load of a screen is worked out from
+// the cells written since the last clear, spaces included, in screen order: one cell each, plus a
+// surcharge when a cell does not touch the one before it, bigger for three or more columns than for
+// two. Rewriting a cell is free, erasing it with a space gives nothing back.
+//
+// The goggles' internals are unknown, so this is a fit to bench measurements. Solid rows of 53 cells
+// fit 637 cells, the cheapest case. Rows of 40 to 52 cells, single cells two columns apart, runs of 2
+// to 25 cells and pairs all fit at 610 to 655 cells of load, a frame the goggles discarded never comes
+// out below 637, and a frame of real OSD elements that fit up to 632. No glyph costs more than a cell.
+// Loads are in thousandths of a cell.
+#define MSP_DP_CELL   1000
+#define MSP_DP_GAP2   750  // The cell is two columns after the one before it
+#define MSP_DP_GAP    1300 // Three columns or more, also across rows
+
+// The load is tracked for the default HD canvas only: DJI neither announces a canvas nor uses
+// another one, HDZero announces 50x18 (MSP_SET_OSD_CANVAS sets osd_canvas_width/height)
+#define MSP_DP_ROWS OSD_HD_ROWS
+
 static displayPort_t mspDisplayPort;
 static serialPortIdentifier_e displayPortSerial;
+
+static struct {
+    uint64_t written[MSP_DP_ROWS];  // Cells written since the last CLEAR_SCREEN, a bit per cell
+    uint32_t demand;                // Load estimate of the screen if no write had been split or dropped
+    uint16_t dropped;               // Writes dropped for lack of budget since the last DRAW_SCREEN
+    bool splitGaps;                 // The last screen did not fit with gaps merged, so split at every gap
+    bool cleared;                   // The screen started with a CLEAR_SCREEN
+    bool autoCleared;               // The driver cleared the screen since the owner last did
+} mspCells;
 
 typedef struct displayPortMspCommand_s {
     uint8_t command;
@@ -86,19 +123,76 @@ static int release(displayPort_t *displayPort)
     return output(displayPort, MSP_DISPLAYPORT, subcmd, sizeof(subcmd));
 }
 
+// Load budget of the screen in thousandths of a cell, 0 when there is none
+static uint32_t loadBudget(void)
+{
+    const bool defaultCanvas = vcdProfile()->video_system == VIDEO_SYSTEM_HD
+        && osdConfig()->canvas_cols == OSD_HD_COLS && osdConfig()->canvas_rows == OSD_HD_ROWS;
+
+    return defaultCanvas ? displayPortProfileMsp()->cellBudget * MSP_DP_CELL : 0;
+}
+
+// Load of the cells of one row, without the step in from the row above
+static uint32_t rowLoad(uint64_t bits)
+{
+    const uint64_t starts = bits & ~(bits << 1);                // first cell of each run
+    const int gap2 = popcount64(starts & (bits << 2));          // run starting two columns after a cell
+    const int gaps = bits ? popcount64(starts) - 1 : 0;          // steps between the runs of the row
+
+    return popcount64(bits) * MSP_DP_CELL + gap2 * MSP_DP_GAP2 + (gaps - gap2) * MSP_DP_GAP;
+}
+
+// Load of the screen, with bits instead of what was written in row (or nothing for row -1)
+static uint32_t screenLoad(int row, uint64_t bits)
+{
+    uint32_t load = 0;
+    int last = -1;                                              // screen position of the last cell so far
+
+    for (int r = 0; r < MSP_DP_ROWS; r++) {
+        const uint64_t b = (r == row) ? bits : mspCells.written[r];
+
+        if (b) {
+            const int step = r * OSD_HD_COLS + __builtin_ctzll(b) - last;
+
+            load += rowLoad(b) + (step == 2 ? MSP_DP_GAP2 : (step > 2 ? MSP_DP_GAP : 0));
+            last = r * OSD_HD_COLS + 63 - __builtin_clzll(b);
+        }
+    }
+
+    return load;
+}
+
+static int sendClear(displayPort_t *displayPort)
+{
+    uint8_t subcmd[] = { MSP_DP_CLEAR_SCREEN };
+
+    // The OSD repaints much the same screen after every clear
+    mspCells.splitGaps = mspCells.demand > loadBudget();
+    mspCells.demand = 0;
+    mspCells.cleared = true;
+    memset(mspCells.written, 0, sizeof(mspCells.written));
+
+    return output(displayPort, MSP_DISPLAYPORT, subcmd, sizeof(subcmd));
+}
+
 static int clearScreen(displayPort_t *displayPort, displayClearOption_e options)
 {
     UNUSED(options);
 
-    uint8_t subcmd[] = { MSP_DP_CLEAR_SCREEN };
+    mspCells.autoCleared = false;
 
-    return output(displayPort, MSP_DISPLAYPORT, subcmd, sizeof(subcmd));
+    return sendClear(displayPort);
 }
 
 static bool drawScreen(displayPort_t *displayPort)
 {
     uint8_t subcmd[] = { MSP_DP_DRAW_SCREEN };
     output(displayPort, MSP_DISPLAYPORT, subcmd, sizeof(subcmd));
+
+    DEBUG_SET(DEBUG_MSP_DISPLAYPORT, 0, screenLoad(-1, 0) / MSP_DP_CELL);  //!< Screen Load
+    DEBUG_SET(DEBUG_MSP_DISPLAYPORT, 1, mspCells.dropped);  //!< Writes Dropped
+    mspCells.dropped = 0;
+    mspCells.cleared = false;
 
     return 0;
 }
@@ -108,28 +202,102 @@ static int screenSize(const displayPort_t *displayPort)
     return displayPort->rows * displayPort->cols;
 }
 
+// Send string as the writes that are needed, a space on a cell that is still blank since the clear
+// changes nothing and is left out. Bits for the cells that are sent are added to *cells, and the
+// bytes sent are returned, or 0 if emit is not set. A gap of blank cells shorter than mergeGap
+// is sent as spaces, as that is cheaper in bytes than starting another write.
+static int segments(displayPort_t *displayPort, uint64_t written, uint64_t *cells, uint8_t row, uint8_t col, uint8_t mspAttr, const char *string, int len, int mergeGap, bool emit)
+{
+    #define BLANK(i) (string[i] == ' ' && col + (i) < 64 && !((written >> (col + (i))) & 1))
+    int bytes = 0;
+
+    for (int i = 0; i < len; i++) {
+        if (BLANK(i)) {
+            continue;
+        }
+
+        int end = i + 1;                                        // end of the write that starts at i
+        for (int j = end; j < len && j - i < MSP_OSD_MAX_STRING_LENGTH; j++) {
+            if (!BLANK(j)) {
+                end = j + 1;
+            } else if (j - end >= mergeGap - 1) {
+                break;
+            }
+        }
+
+        if (col + i < 64) {
+            *cells |= (((uint64_t)1 << (end - i)) - 1) << (col + i);
+        }
+        if (emit) {
+            uint8_t buf[MSP_OSD_MAX_STRING_LENGTH + 4] = { MSP_DP_WRITE_STRING, row, col + i, mspAttr };
+
+            memcpy(&buf[4], &string[i], end - i);
+            bytes += output(displayPort, MSP_DISPLAYPORT, buf, end - i + 4);
+        }
+        i = end - 1;
+    }
+
+    return bytes;
+    #undef BLANK
+}
+
 static int writeString(displayPort_t *displayPort, uint8_t col, uint8_t row, uint8_t attr, const char *string)
 {
-#define MSP_OSD_MAX_STRING_LENGTH 30 // FIXME move this
-    uint8_t buf[MSP_OSD_MAX_STRING_LENGTH + 4];
-
-    int len = strlen(string);
-    if (len >= MSP_OSD_MAX_STRING_LENGTH) {
-        len = MSP_OSD_MAX_STRING_LENGTH;
-    }
-
-    buf[0] = MSP_DP_WRITE_STRING;
-    buf[1] = row;
-    buf[2] = col;
-    buf[3] = displayPortProfileMsp()->fontSelection[attr & (DISPLAYPORT_SEVERITY_COUNT - 1)] & DISPLAYPORT_MSP_ATTR_FONT;
+    const int len = strlen(string);
+    uint8_t mspAttr = displayPortProfileMsp()->fontSelection[attr & (DISPLAYPORT_SEVERITY_COUNT - 1)] & DISPLAYPORT_MSP_ATTR_FONT;
 
     if (attr & DISPLAYPORT_BLINK) {
-        buf[3] |= DISPLAYPORT_MSP_ATTR_BLINK;
+        mspAttr |= DISPLAYPORT_MSP_ATTR_BLINK;
     }
 
-    memcpy(&buf[4], string, len);
+    // Beyond the tracked cells every character is sent
+    const bool tracked = row < MSP_DP_ROWS && col + len <= 64;
+    const uint64_t written = tracked ? mspCells.written[row] : ~(uint64_t)0;
+    const uint32_t budget = tracked ? loadBudget() : 0;
+    int mergeGap = MSP_DP_WRITE_OVERHEAD;
+    uint64_t cells = written;
 
-    return output(displayPort, MSP_DISPLAYPORT, buf, len + 4);
+    if (budget) {
+        uint64_t unsplit = 0;
+
+        segments(displayPort, 0, &unsplit, row, col, 0, string, len, MSP_DP_WRITE_OVERHEAD, false);
+        if (unsplit) {
+            mspCells.demand += rowLoad(unsplit) + MSP_DP_GAP;
+        }
+
+        // Spend bytes to keep blank cells blank when the screen is short of budget
+        mergeGap = -1;
+        for (int gap = mspCells.splitGaps ? 0 : MSP_DP_WRITE_OVERHEAD; gap >= 0 && mergeGap < 0; gap -= MSP_DP_WRITE_OVERHEAD) {
+            uint64_t trial = written;
+
+            segments(displayPort, written, &trial, row, col, 0, string, len, gap, false);
+            if (screenLoad(row, trial) <= budget) {
+                mergeGap = gap;
+            }
+        }
+        if (mergeGap < 0 && !mspCells.cleared && !mspCells.autoCleared) {
+            // Content built up over several draws, as the CMS does: start over, split every gap
+            // and have the owner repaint the screen. Once, so a page too big cannot loop.
+            sendClear(displayPort);
+            mspCells.autoCleared = mspCells.splitGaps = true;
+            displayPort->cleared = true;
+            displayPort->cursorRow = -1;
+            return writeString(displayPort, col, row, attr, string);
+        }
+        if (mergeGap < 0) {
+            // Sending it would make the goggles discard the whole screen
+            mspCells.dropped++;
+            return 0;
+        }
+    }
+
+    const int bytes = segments(displayPort, written, &cells, row, col, mspAttr, string, len, mergeGap, true);
+
+    if (tracked) {
+        mspCells.written[row] = cells;
+    }
+
+    return bytes;
 }
 
 static int writeSys(displayPort_t *displayPort, uint8_t col, uint8_t row, displayPortSystemElement_e systemElement)
